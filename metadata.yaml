@@ -1,0 +1,14 @@
+# Copyright 2021 Márton Kiss
+# See LICENSE file for licensing details.
+name: gitlab-operator
+description: |
+  This machine charm provides a GitLab CE server.
+summary: |
+  The summary for GitLab CE goes here.
+series: [focal]
+requires:
+  shared-db:
+    interface: mysql-shared
+provides:
+  gitlab-server:
+    interface: gitlab-server

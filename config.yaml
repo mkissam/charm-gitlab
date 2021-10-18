@@ -1,0 +1,24 @@
+# Copyright 2021 Canonical Ltd.
+# See LICENSE file for licensing details.
+#
+options:
+  fqdn:
+    default: localhost
+    description: GitLab server FQDN, like gitlab.yourdomain.tld
+    type: string
+  email_from:
+    default: example@example.com
+    description: Sender address of GitLab email notifications
+    type: string
+  email_display_name:
+    default: GitLab
+    description: Sender display name of GitLab email notifications
+    type: string
+  email_reply_to:
+    default: noreply@example.com
+    description: GitLab email notification reply address
+    type: string
+  email_subject_suffix:
+    default: ""
+    description: The suffix of notification email subjects
+    type: string
