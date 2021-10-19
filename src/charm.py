@@ -7,6 +7,7 @@ import sys
 sys.path.append('lib')  # noqa: E402
 
 from charmhelpers.core.templating import render
+from charmhelpers.core.host import service
 from gitlab_helpers import gitlab
 
 from ops.charm import CharmBase
@@ -51,6 +52,7 @@ class GitlabServerCharm(CharmBase):
         gitlab.install_go()
         gitlab.install_node()
         gitlab.create_system_user()
+        gitlab.install_redis()
         gitlab.install_gitlab()
         gitlab.install_nginx()
         logger.info("Install hook finished.")
@@ -71,18 +73,22 @@ class GitlabServerCharm(CharmBase):
 
     def on_config_changed(self, event):
         logger.info("Configuration changed")
+        self._render_redis_configuration()
         self._render_gitlab_configuration()
         self._render_secrets_configuration()
-        self._render_redis_configuration()
+        self._render_gitlab_redis_configuration()
         self._render_puma_configuration()
         self._render_database_configuration()
         self._render_nginx_configuration()
 
         # restart services to pick up configuration changes
-        # TODO ^^^
+
+        logger.info("Restart services")
+        logger.debug("Restart redis service")
+        service("restart", "redis")
 
     def _render_gitlab_configuration(self):
-        logger.info("Render gitlab configuration")
+        logger.debug("Render gitlab configuration")
         config_path = "/home/git/gitlab/config/gitlab.yml"
         config_template = '14-3-stable/gitlab.yml.j2'
         context = { 
@@ -94,36 +100,48 @@ class GitlabServerCharm(CharmBase):
         }
         render(config_template, config_path, context, perms=0o755)
 
+    def _render_redis_configuration(self):
+        logger.debug("Render redis configuration")
+        config_path = "/etc/redis/redis.conf"
+        config_template = '14-3-stable/redis.conf.j2'
+        context = {  }
+        render(config_template, config_path, context, perms=0o640,
+              owner='redis', group='redis')
+
     def _render_secrets_configuration(self):
-        logger.info("Render secrets configuration")
+        logger.debug("Render secrets configuration")
         config_path = "/home/git/gitlab/config/secrets.yml"
         config_template = '14-3-stable/secrets.yml.j2'
         context = { }
-        render(config_template, config_path, context, perms=0o755)
+        render(config_template, config_path, context, perms=0o755,
+              owner='git', group='git')
 
-    def _render_redis_configuration(self):
-        logger.info("Render redis configuration")
+    def _render_gitlab_redis_configuration(self):
+        logger.debug("Render gitlab redis configuration")
         config_path = "/home/git/gitlab/config/resque.yml"
         config_template = '14-3-stable/resque.yml.j2'
         context = { }
-        render(config_template, config_path, context, perms=0o755)
+        render(config_template, config_path, context, perms=0o755,
+              owner='git', group='git')
 
     def _render_puma_configuration(self):
-        logger.info("Render puma gitlab configuration")
+        logger.debug("Render puma gitlab configuration")
         config_path = "/home/git/gitlab/config/puma.rb"
         config_template = '14-3-stable/puma.rb.j2'
         context = { }
-        render(config_template, config_path, context, perms=0o755)
+        render(config_template, config_path, context, perms=0o755,
+              owner='git', group='git')
 
     def _render_database_configuration(self):
-        logger.info("Render database configuration")
+        logger.debug("Render database configuration")
         config_path = "/home/git/gitlab/config/database.yml"
         config_template = '14-3-stable/database.yml.j2'
         context = { }
-        render(config_template, config_path, context, perms=0o755)
+        render(config_template, config_path, context, perms=0o755,
+              owner='git', group='git')
 
     def _render_nginx_configuration(self):
-        logger.info("Render nginx configuration")
+        logger.debug("Render nginx configuration")
         config_path = "/etc/nginx/sites-available/gitlab"
         config_template = '14-3-stable/nginx-gitlab.j2'
         context = {

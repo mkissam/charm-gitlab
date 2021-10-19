@@ -4,6 +4,8 @@ import os.path
 
 from charmhelpers.fetch import (
     apt_install, add_source, apt_update, add_source)
+from charmhelpers.core.host import (
+    mkdir, symlink, write_file)
 from subprocess import check_call, check_output
 
 logger = logging.getLogger(__name__)
@@ -19,7 +21,7 @@ def install_packages_and_dependencies():
                "libffi-dev", "curl", "openssh-server", "libxml2-dev",
                "libxslt-dev", "libcurl4-openssl-dev", "libicu-dev", "logrotate",
                "rsync", "python-docutils", "pkg-config", "cmake",
-               "runit-systemd", "libkrb5-dev"]
+               "runit-systemd", "libkrb5-dev", "libpq-dev"]
     apt_install(packages)
 
     # Git
@@ -67,7 +69,7 @@ def install_ruby():
     if not os.path.exists(ruby_tmpdir):
         os.mkdir(ruby_tmpdir)
     
-    logger.info("DEBUG: download ruby")
+    logger.debug("download ruby")
     if not os.path.isfile("/tmp/ruby/ruby-2.7.4.tar.gz"):
         cmd = [
             "/bin/bash", "-c",
@@ -77,7 +79,7 @@ def install_ruby():
         ]
         check_output(cmd)
 
-    logger.info("DEBUG: extract ruby")
+    logger.debug("extract ruby")
     if not os.path.isfile("/tmp/ruby/ruby-2.7.4"):
         # extract ruby
         cmd = [
@@ -88,7 +90,7 @@ def install_ruby():
         ]
         check_output(cmd)
 
-    logger.info("DEBUG: build and install ruby")
+    logger.debug("build and install ruby")
     # build ruby
     if not os.path.isfile("/usr/local/bin/ruby"):
         cmd = [
@@ -100,30 +102,29 @@ def install_ruby():
             "sudo make install"
         ]
         check_output(cmd)
-    logger.info("DEBUG: done")
 
 # 3. Go
 def install_go():
     logger.info("Install go")
     # remove former Go installation folder
-    if not os.path.exists("/usr/local/go"):
+    if os.path.exists("/usr/local/go"):
         cmd = ["sudo", "rm", "-rf", "/usr/local/go"]
         check_output(cmd)
     # download Go
-    if not os.path.isfile("/tmp/go1.15.12.linux-amd64.tar.gz"):
+    if not os.path.isfile("/tmp/go1.16.9.linux-amd64.tar.gz"):
         cmd = [
             "/bin/bash", "-c",
             "set -o pipefail ;"
             "cd /tmp ;"
-            "curl --remote-name --progress-bar https://dl.google.com/go/go1.15.12.linux-amd64.tar.gz ;"
+            "curl --remote-name --progress-bar https://dl.google.com/go/go1.16.9.linux-amd64.tar.gz ;"
         ]
         check_output(cmd)
     # Extract Go distribution
     cmd = [
         "/bin/bash", "-c",
         "set -o pipefail ;"
-        "echo 'bbdb935699e0b24d90e2451346da76121b2412d30930eabcd80907c230d098b7  /tmp/go1.15.12.linux-amd64.tar.gz' | shasum -a256 -c - && "
-        "sudo tar -C /usr/local -xzf /tmp/go1.15.12.linux-amd64.tar.gz ;"
+        "echo 'd2c095c95f63c2a3ef961000e0ecb9d81d5c68b6ece176e2a8a2db82dc02931c  /tmp/go1.16.9.linux-amd64.tar.gz' | shasum -a256 -c - && "
+        "sudo tar -C /usr/local -xzf /tmp/go1.16.9.linux-amd64.tar.gz ;"
         "sudo ln -sf /usr/local/go/bin/{go,godoc,gofmt} /usr/local/bin/ ;"
     ]
     check_output(cmd)
@@ -158,6 +159,16 @@ def create_system_user():
             "sudo", "adduser", "--disabled-login", "--gecos", "'GitLab'","git"
         ]
         check_output(cmd)
+
+# 7. Redis
+def install_redis():
+    logger.info("Install redis")
+    apt_install(["redis"])
+    mkdir("/var/run/redis", owner="redis", group="redis", perms=0o755)
+    content = "d  /var/run/redis  0755  redis  redis  10d  -\n"
+    write_file("/etc/tmpfiles.d/redis.conf", content, perms=0o644)
+    # Add git to the redis group
+    check_output(["sudo", "usermod", "-aG", "redis", "git"])
 
 # 8. GitLab
 def install_gitlab():
@@ -240,16 +251,67 @@ def install_gitlab():
 
     # Configure Redis connection settings
     # TODO: create from template: /home/git/gitlab/config/resque.yml
-    # return
+    
+    # Install Gems
+
+    # Notice: libpq-dev package is required for the pg 1.2.3 gem
+    logger.debug("Install Gems")
+    cmd = [
+        "/bin/bash", "-c",
+        "cd /home/git/gitlab ;"
+        "sudo -u git -H bundle config set --local deployment 'true' ;"
+        "sudo -u git -H bundle config set --local without 'development test mysql aws kerberos' ;"
+        "sudo -u git -H bundle install ;"
+    ]
+    check_output(cmd)
+
+    # Install GitLab Shell
+    logger.debug("Install GitLab Shell")
+    cmd = [
+        "/bin/bash", "-c",
+        "cd /home/git/gitlab ;"
+        "sudo -u git -H bundle exec rake gitlab:shell:install RAILS_ENV=production ;"
+    ]
+    check_output(cmd)
+
+    # Install GitLab Workhorse
+    logger.debug("Install GitLab Workhorse")
+    cmd = [
+        "/bin/bash", "-c",
+        "cd /home/git/gitlab ;"
+        "sudo -u git -H bundle exec rake \"gitlab:workhorse:install[/home/git/gitlab-workhorse]\" RAILS_ENV=production ;"
+    ]
+    check_output(cmd)
+
+    # Install GitLab Pages
+    logger.debug("Install GitLab Pages")
+    if not os.path.exists("/home/git/gitlab-pages"):
+        cmd = [
+            "/bin/bash", "-c",
+            "cd /home/git ;"
+            "sudo -u git -H git clone https://gitlab.com/gitlab-org/gitlab-pages.git ;"
+            "cd gitlab-pages ;"
+            "sudo -u git -H git checkout v$(</home/git/gitlab/GITLAB_PAGES_VERSION) ;"
+            "sudo -u git -H make"
+        ]
+        check_output(cmd)
+
+    # Install Gitaly
+    logger.debug("Install Gitaly")
+    cmd = [
+        "/bin/bash", "-c",
+        "cd /home/git/gitlab ;"
+        "sudo -u git -H bundle exec rake \"gitlab:gitaly:install[/home/git/gitaly,/home/git/repositories]\" RAILS_ENV=production ;"
+        "sudo chmod 0700 /home/git/gitlab/tmp/sockets/private ;"
+        "sudo chown git /home/git/gitlab/tmp/sockets/private ;"
+    ]
+    check_output(cmd)
+
 
 # 9. Nginx
 def install_nginx():
     logger.info("Install nginx")
     apt_install(["nginx"])
-    # create gitlab configuration symlink
-    cmd = [
-        "/bin/bash", "-c",
-        "sudo ln -s /etc/nginx/sites-available/gitlab /etc/nginx/sites-enabled/gitlab;"
-    ]
-    check_output(cmd)
-
+    # create gitlab configuration symlink if not present
+    if not os.path.exists("/etc/nginx/sites-enabled/gitlab"):
+        symlink("/etc/nginx/sites-available/gitlab", "/etc/nginx/sites-enabled/gitlab")
