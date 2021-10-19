@@ -1,2 +1,3 @@
 ops
+ops-lib-pgsql
 charmhelpers

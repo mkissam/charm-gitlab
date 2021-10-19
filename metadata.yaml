@@ -7,8 +7,9 @@ summary: |
   The summary for GitLab CE goes here.
 series: [focal]
 requires:
-  shared-db:
-    interface: mysql-shared
+  db:
+    interface: pgsql
+    limit: 1
 provides:
   gitlab-server:
     interface: gitlab-server

@@ -18,6 +18,9 @@ from ops.model import (
     MaintenanceStatus,
 )
 from ops.framework import StoredState
+import ops.lib
+
+pgsql = ops.lib.use("pgsql", 1, "postgresql-charmers@lists.launchpad.net")
 
 logger = logging.getLogger(__name__)
 
@@ -27,24 +30,19 @@ class GitlabServerCharm(CharmBase):
 
     def __init__(self, *args):
         super().__init__(*args)
+
+        self._stored.set_default(installed=False, bootstrapped=False,
+                                db_conn_str=None, db_uri=None, db_ro_uris=[])
+
         self.framework.observe(self.on.install, self.on_install)
         self.framework.observe(self.on.config_changed, self.on_config_changed)
-        self.framework.observe(self.on.fortune_action, self._on_fortune_action)
-        self._stored.set_default(things=[])
 
-    def _on_config_changed(self, _):
-        current = self.config["thing"]
-        if current not in self._stored.things:
-            logger.debug("found a new thing: %r", current)
-            self._stored.things.append(current)
+        self.db = pgsql.PostgreSQLClient(self, 'db')  # 'db' relation in metadata.yaml
+        self.framework.observe(self.db.on.database_relation_joined, self._on_database_relation_joined)
+        self.framework.observe(self.db.on.master_changed, self._on_master_changed)
+        self.framework.observe(self.db.on.standby_changed, self._on_standby_changed)
 
-    def _on_fortune_action(self, event):
-        fail = event.params["fail"]
-        if fail:
-            event.fail(fail)
-        else:
-            event.set_results({"fortune": "A bug in the code is worth two in the documentation."})
-
+    
     def on_install(self, event):
         self.model.unit.status = MaintenanceStatus('Installing gitlab server')        
         gitlab.install_packages_and_dependencies()
@@ -55,6 +53,8 @@ class GitlabServerCharm(CharmBase):
         gitlab.install_redis()
         gitlab.install_gitlab()
         gitlab.install_nginx()
+        self._stored.installed = True
+        self.model.unit.status = BlockedStatus('Waiting for database relation')
         logger.info("Install hook finished.")
 
     def _on_config_changed(self, _):
@@ -73,6 +73,9 @@ class GitlabServerCharm(CharmBase):
 
     def on_config_changed(self, event):
         logger.info("Configuration changed")
+        if not self._stored.installed:
+            logger.debug("Skipping configuration hook as the site is not installed yet.")
+            return
         self._render_redis_configuration()
         self._render_gitlab_configuration()
         self._render_secrets_configuration()
@@ -86,6 +89,16 @@ class GitlabServerCharm(CharmBase):
         logger.info("Restart services")
         logger.debug("Restart redis service")
         service("restart", "redis")
+
+        if not self._stored.db_conn_str and not self._stored.bootstrapped:
+            self.model.unit.status = BlockedStatus('Waiting for database relation')
+
+        if self._stored.db_conn_str and not self._stored.bootstrapped:
+            self.model.unit.status = MaintenanceStatus('Bootstrapping gitlab server')
+            logger.debug("Bootstrap Gitlab Database")
+            logger.debug("pgsql db conn = {}".format(self._stored.db_conn_str))
+            # TODO: render database.yml config
+            # TODO: bootstrap GitLab server
 
     def _render_gitlab_configuration(self):
         logger.debug("Render gitlab configuration")
@@ -148,6 +161,54 @@ class GitlabServerCharm(CharmBase):
             "fqdn": "localhost"
         }
         render(config_template, config_path, context, perms=0o755)
+
+    def _on_database_relation_joined(self, event: pgsql.DatabaseRelationJoinedEvent):
+        logger.debug("_on_database_relation_joined()")
+        if self.model.unit.is_leader():
+            # Provide requirements to the PostgreSQL server.
+            event.database = 'gitlab-server'  # Request database named mydbname
+            event.extensions = ['citext']  # Request the citext extension installed
+        elif event.database != 'gitlab-server':
+            # Leader has not yet set requirements. Defer, incase this unit
+            # becomes leader and needs to perform that operation.
+            event.defer()
+            return
+
+    def _on_master_changed(self, event: pgsql.MasterChangedEvent):
+        logger.debug("_on_master_changed()")
+        if event.database != 'gitlab-server':
+            # Leader has not yet set requirements. Wait until next event,
+            # or risk connecting to an incorrect database.
+            return
+        
+        # The connection to the primary database has been created,
+        # changed or removed. More specific events are available, but
+        # most charms will find it easier to just handle the Changed
+        # events. event.master is None if the master database is not
+        # available, or a pgsql.ConnectionString instance.
+        self._stored.db_conn_str = None if event.master is None else event.master.conn_str
+        self._stored.db_uri = None if event.master is None else event.master.uri
+
+        # You probably want to emit an event here or call a setup routine to
+        # do something useful with the libpq connection string or URI now they
+        # are available.
+        self.on_config_changed(event)
+
+    def _on_standby_changed(self, event: pgsql.StandbyChangedEvent):
+        logger.debug("_on_standby_changed()")
+        if event.database != 'gitlab-server':
+            # Leader has not yet set requirements. Wait until next event,
+            # or risk connecting to an incorrect database.
+            return
+
+        # Charms needing access to the hot standby databases can get
+        # their connection details here. Applications can scale out
+        # horizontally if they can make use of the read only hot
+        # standby replica databases, rather than only use the single
+        # master. event.stanbys will be an empty list if no hot standby
+        # databases are available.
+        self._stored.db_ro_uris = [c.uri for c in event.standbys]
+
 
 
 if __name__ == "__main__":
