@@ -7,6 +7,7 @@ from charmhelpers.fetch import (
 from charmhelpers.core.host import (
     mkdir, symlink, write_file)
 from subprocess import check_call, check_output
+from charmhelpers.core.templating import render
 
 logger = logging.getLogger(__name__)
 
@@ -305,6 +306,14 @@ def install_gitlab():
         "sudo chmod 0700 /home/git/gitlab/tmp/sockets/private ;"
         "sudo chown git /home/git/gitlab/tmp/sockets/private ;"
     ]
+
+    logger.debug("Render gitaly system service")
+    config_path = "/etc/systemd/system/gitaly.service"
+    config_template = '14-3-stable/gitaly.service.j2'
+    context = { }
+    render(config_template, config_path, context, perms=0o644,
+            owner='root', group='root')
+
     check_output(cmd)
 
 
