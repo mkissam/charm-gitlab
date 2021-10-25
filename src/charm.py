@@ -3,11 +3,16 @@
 # See LICENSE file for licensing details.
 
 import logging
+import subprocess
 import sys
 sys.path.append('lib')  # noqa: E402
 
 from charmhelpers.core.templating import render
-from charmhelpers.core.host import service
+from charmhelpers.core.host import (
+    service,
+    service_running,
+    service_start
+)
 from gitlab_helpers import gitlab
 
 from ops.charm import CharmBase
@@ -96,9 +101,18 @@ class GitlabServerCharm(CharmBase):
         if self._stored.db_conn_str and not self._stored.bootstrapped:
             self.model.unit.status = MaintenanceStatus('Bootstrapping gitlab server')
             logger.debug("Bootstrap Gitlab Database")
+            logger.debug("ensure gitaly service is running")
+            if not service_running("gitaly"):
+                started = service_start("gitaly")
             logger.debug("pgsql db conn = {}".format(self._stored.db_conn_str))
-            # TODO: render database.yml config
-            # TODO: bootstrap GitLab server
+            try:
+                gitlab.bootstrap_gitlab()
+            except subprocess.CalledProcessError as e:
+                logger.error("Failed to execute rake gitlab:setup")
+                raise RuntimeError('Failed to bootstrap gitlab')
+            self._stored.bootstrapped = True
+            self.model.unit.status = ActiveStatus('Ready')
+
 
     def _render_gitlab_configuration(self):
         logger.debug("Render gitlab configuration")
@@ -150,6 +164,16 @@ class GitlabServerCharm(CharmBase):
         config_path = "/home/git/gitlab/config/database.yml"
         config_template = '14-3-stable/database.yml.j2'
         context = { }
+        if self._stored.db_conn_str:
+            kv = dict(item.split("=") for item in self._stored.db_conn_str.split(" "))
+            # context.update(res)
+            context["database"] = kv["dbname"]
+            context["username"] = kv["user"]
+            context["password"] = kv["password"]
+            context["db_host"] = kv["host"]
+            context["db_port"] = kv["port"]
+            # TODO: use port in database template
+
         render(config_template, config_path, context, perms=0o755,
               owner='git', group='git')
 
@@ -166,8 +190,8 @@ class GitlabServerCharm(CharmBase):
         logger.debug("_on_database_relation_joined()")
         if self.model.unit.is_leader():
             # Provide requirements to the PostgreSQL server.
-            event.database = 'gitlab-server'  # Request database named mydbname
-            event.extensions = ['citext']  # Request the citext extension installed
+            event.database = 'gitlab-server'
+            event.extensions = ['pg_trgm', 'btree_gist']
         elif event.database != 'gitlab-server':
             # Leader has not yet set requirements. Defer, incase this unit
             # becomes leader and needs to perform that operation.

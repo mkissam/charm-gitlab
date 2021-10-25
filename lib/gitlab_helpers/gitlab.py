@@ -1,6 +1,8 @@
 import logging
 import os
 import os.path
+import sys
+import subprocess
 
 from charmhelpers.fetch import (
     apt_install, add_source, apt_update, add_source)
@@ -324,3 +326,26 @@ def install_nginx():
     # create gitlab configuration symlink if not present
     if not os.path.exists("/etc/nginx/sites-enabled/gitlab"):
         symlink("/etc/nginx/sites-available/gitlab", "/etc/nginx/sites-enabled/gitlab")
+
+
+def bootstrap_gitlab():
+    # Install Gitaly
+    logger.debug("Bootstrap gitlab")
+
+    # cleanup redis
+    cmd = ["redis-cli", "-s", "/var/run/redis/redis.sock", "flushall"]
+    check_output(cmd)
+
+    # setup gitlab
+    cmd = [
+        "/bin/bash", "-c",
+        "cd /home/git/gitlab ;"
+        "sudo -u git -H DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rake gitlab:setup RAILS_ENV=production GITLAB_ROOT_PASSWORD=s3cr3tpassw0rd GITLAB_ROOT_EMAIL=admin@example.com force=yes ;"
+    ]
+    try:
+         p = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except subprocess.CalledProcessError as e:
+        logger.debug(e.stderr)
+        raise
+
+
